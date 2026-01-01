@@ -15,7 +15,7 @@
 #define MAX_MNEMONIC_LEN       16
 #define MAX_OPERANDS           4
 #define MAX_SYMBOLS            4096
-#define MEMORY_SIZE            65536      // 64KB
+#define MEMORY_SIZE            16777216   // 16MB
 #define STACK_SIZE             4096
 #define NUM_REGISTERS          32         // Extended from 16 to 32
 #define MAX_INCLUDE_DEPTH      16
