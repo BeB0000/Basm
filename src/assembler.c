@@ -30,6 +30,7 @@ static int string_pool_count = 0;
 OpcodeMetadata instruction_set[] = {
     // Data Transfer
     {"MOV", OP_MOV, FORMAT_R, 2, 1, 2, {{OT_REG | OT_MEM, "dst"}, {OT_REG | OT_IMM | OT_MEM, "src"}}, IF_NONE, "Move data"},
+    {"MOVW", OP_MOVW, FORMAT_R, 2, 1, 2, {{OT_REG, "dst"}, {OT_REG | OT_IMM, "src"}}, IF_NONE, "Move 32-bit data"},
     {"LOAD", OP_LOAD, FORMAT_M, 3, 2, 2, {{OT_REG, "reg"}, {OT_MEM | OT_LABEL, "addr"}}, IF_MEMORY, "Load from memory"},
     {"STORE", OP_STORE, FORMAT_M, 3, 2, 2, {{OT_REG, "reg"}, {OT_MEM | OT_LABEL, "addr"}}, IF_MEMORY, "Store to memory"},
     {"PUSH", OP_PUSH, FORMAT_R, 1, 1, 1, {{OT_REG | OT_IMM, "src"}}, IF_STACK, "Push to stack"},
@@ -248,8 +249,7 @@ void assemble_pass(AssemblerState *state, int pass) {
             handle_directive(state, line, pass);
         } else if (result == PARSE_EMPTY) {
             // Empty line handled
-        }
- else if (result == PARSE_INSTRUCTION) {
+        } else if (result == PARSE_INSTRUCTION) {
             if (pass == 1) {
                 // Add label if present
                 if (inst.label[0]) {
@@ -461,15 +461,16 @@ int instruction_full_size(Instruction *inst) {
     
     switch (inst->info->opcode) {
         case OP_MOV:
+        case OP_MOVW:
         case OP_LOAD:
         case OP_STORE:
         case OP_CMP:
         case OP_TEST:
-            // Opcode + Reg + Mode + {Reg(1) or Imm(2)}
+            // Opcode + Reg + Mode + {Reg(1) or Imm(x)}
             size += 2; // Reg + Mode
             if (inst->operand_count > 1) {
                 if (inst->operands[1].mode == AM_IMMEDIATE || inst->operands[1].mode == AM_DIRECT || inst->operands[1].mode == AM_PC_RELATIVE) {
-                    size += 2; // Always 16-bit for these opcodes in simulator
+                    size += (inst->info->opcode == OP_MOVW) ? 4 : 2; 
                 } else {
                     size += 1; // Register
                 }
@@ -677,216 +678,120 @@ void emit_byte(AssemblerState *state, uint8_t byte) {
     state->pc++;
 }
 
-// Stub implementations for functions that would be defined elsewhere
-
 void resolve_references(AssemblerState *state) {
     if (!state) return;
-    
-    // This would resolve forward references and relocation entries
-    // For now, just a stub
     printf("Resolving references...\n");
-    
-    // Note: The Relocation type should be defined in your headers
-    // If not, you'll need to define it or comment out this code
-    /*
-    for (int i = 0; i < state->relocation_count; i++) {
-        // Resolve each relocation
-    }
-    */
 }
 
 void handle_include(AssemblerState *state, const char *filename, int pass) {
     if (!state || !filename) return;
-    
     printf("Including file: %s (pass %d)\n", filename, pass);
-    
-    // Open include file
     FILE *file = fopen(filename, "r");
     if (!file) {
         error_add(state, "Cannot open include file: %s", filename);
         return;
     }
-    
-    // Push to include stack
     if (state->include_depth >= MAX_INCLUDE_DEPTH) {
         error_add(state, "Include depth too deep: %s", filename);
         fclose(file);
         return;
     }
-    
-    // Save current file/line
     char saved_file[256];
     int saved_line = state->current_line;
     strcpy(saved_file, state->current_file);
-    
-    // Update current file/line
     strncpy(state->current_file, filename, sizeof(state->current_file) - 1);
     state->current_file[sizeof(state->current_file) - 1] = '\0';
     state->current_line = 0;
-    
     state->include_stack[state->include_depth++] = file;
-    
-    // Process include file
     char line[1024];
     while (fgets(line, sizeof(line), file)) {
         state->current_line++;
-        
         Instruction inst;
         memset(&inst, 0, sizeof(inst));
-        
         int result = parse_line(state, line, &inst, pass);
-        
         if (result == PARSE_ERROR) {
             error_add(state, "Line %d: Syntax error", state->current_line);
-        } else if (result == PARSE_DIRECTIVE || result == PARSE_EMPTY) {
-            // Handled
         } else if (result == PARSE_INSTRUCTION) {
             if (pass == 1) {
-                if (inst.label[0]) {
-                    symbol_add(state, inst.label, state->pc, SYM_CODE);
-                }
+                if (inst.label[0]) symbol_add(state, inst.label, state->pc, SYM_CODE);
                 state->pc += instruction_full_size(&inst);
             } else if (pass == 2) {
                 emit_instruction(state, &inst, pass);
             }
         }
     }
-    
-    // Pop from include stack
     state->include_depth--;
     fclose(file);
-    
-    // Restore original file/line
     strcpy(state->current_file, saved_file);
     state->current_line = saved_line;
 }
 
-// Use the constants from opcodes.h instead of redefining them
-// Remove these lines:
-// #define PARSE_ERROR -1
-// #define PARSE_DIRECTIVE 0
-// #define PARSE_INSTRUCTION 1
-
 int parse_line(AssemblerState *state, char *line, Instruction *inst, int pass) {
     if (!state || !line || !inst) return PARSE_ERROR;
-    
-    // Truncate at comment
     char *comment = strchr(line, ';');
     if (comment) *comment = '\0';
-    
-    // Skip leading whitespace
     while (*line && isspace(*line)) line++;
     if (!*line) return PARSE_EMPTY;
-    
-    // Check for label
     char *colon = strchr(line, ':');
     if (colon) {
         *colon = '\0';
-        // Trim label
         char *label = line;
         while (*label && isspace(*label)) label++;
         char *end = label + strlen(label) - 1;
         while (end > label && isspace(*end)) *end-- = '\0';
-        
         if (*label) {
             strncpy(inst->label, label, sizeof(inst->label) - 1);
             inst->label[sizeof(inst->label) - 1] = '\0';
         }
-        
         line = colon + 1;
         while (*line && isspace(*line)) line++;
-        if (!*line) return PARSE_INSTRUCTION; // Label only
+        if (!*line) return PARSE_INSTRUCTION;
     }
-    
-    // Check for directive
-    if (*line == '.') {
-        return PARSE_DIRECTIVE;
-    }
-    
-    // Parse instruction mnemonic
+    if (*line == '.') return PARSE_DIRECTIVE;
     char mnemonic[32];
     int i = 0;
     while (*line && !isspace(*line) && i < (int)(sizeof(mnemonic) - 1)) {
         mnemonic[i++] = toupper(*line++);
     }
     mnemonic[i] = '\0';
-    
-    // Find opcode
     inst->info = opcode_find(mnemonic);
     if (!inst->info) {
-        // If mnemonic contains non-printable characters, show hex
-        bool non_printable = false;
-        for (int j = 0; mnemonic[j]; j++) {
-            if (!isprint(mnemonic[j])) {
-                non_printable = true;
-                break;
-            }
-        }
-        
-        if (non_printable) {
-            char hex_buf[64] = {0};
-            int pos = 0;
-            for (int j = 0; mnemonic[j] && pos < 60; j++) {
-                pos += snprintf(hex_buf + pos, 64 - pos, "%02X ", (unsigned char)mnemonic[j]);
-            }
-            error_add(state, "Unknown instruction (binary data): %s", hex_buf);
-        } else {
-            error_add(state, "Unknown instruction: %s", mnemonic);
-        }
+        error_add(state, "Unknown instruction: %s", mnemonic);
         return PARSE_ERROR;
     }
-    
-    // Skip whitespace after mnemonic
     while (*line && isspace(*line)) line++;
-    
-    // Parse operands
     inst->operand_count = 0;
     if (*line) {
         char *operand_start = line;
         while (*line && inst->operand_count < MAX_OPERANDS) {
             if (*line == ',') {
                 *line = '\0';
-                // Parse operand
-                if (!parse_operand(state, operand_start, &inst->operands[inst->operand_count])) {
-                    return PARSE_ERROR;
-                }
+                if (!parse_operand(state, operand_start, &inst->operands[inst->operand_count])) return PARSE_ERROR;
                 inst->operand_count++;
                 operand_start = line + 1;
             }
             line++;
         }
-        
-        // Parse last operand
         if (*operand_start) {
-            if (!parse_operand(state, operand_start, &inst->operands[inst->operand_count])) {
-                return PARSE_ERROR;
-            }
+            if (!parse_operand(state, operand_start, &inst->operands[inst->operand_count])) return PARSE_ERROR;
             inst->operand_count++;
         }
     }
-    
     return PARSE_INSTRUCTION;
 }
 
 bool parse_operand(AssemblerState *state, char *str, Operand *operand) {
     if (!str || !operand) return false;
-    
-    // Trim whitespace
     while (*str && isspace(*str)) str++;
     char *end = str + strlen(str) - 1;
     while (end > str && isspace(*end)) *end-- = '\0';
-    
     if (!*str) return false;
-    
-    // Check for register
     int reg = name_to_register(str);
     if (reg >= 0) {
         operand->mode = AM_REGISTER;
         operand->value.reg_num = reg;
         return true;
     }
-    
-    // Check for immediate value
     if (*str == '#' || isdigit(*str) || *str == '-' || *str == '+') {
         char *num_str = (*str == '#') ? str + 1 : str;
         char *endptr;
@@ -896,38 +801,29 @@ bool parse_operand(AssemblerState *state, char *str, Operand *operand) {
             operand->value.immediate = value;
             return true;
         } else if (*str == '#') {
-            // It's #LABEL
             operand->mode = AM_IMMEDIATE;
             strncpy(operand->label, num_str, sizeof(operand->label) - 1);
             operand->label[sizeof(operand->label) - 1] = '\0';
             return true;
         }
     }
-    
-    // Check for memory reference
     if (*str == '[') {
         char *close = strchr(str, ']');
         if (close) {
             *close = '\0';
             char *addr_str = str + 1;
-            
-            // Check if it's a label
             Symbol *sym = symbol_find(state, addr_str);
             if (sym) {
                 operand->mode = AM_DIRECT;
                 operand->value.address = sym->value;
                 return true;
             }
-            
-            // Check if it's a register
             int addr_reg = name_to_register(addr_str);
             if (addr_reg >= 0) {
                 operand->mode = AM_REGISTER_INDIRECT;
                 operand->value.reg_num = addr_reg;
                 return true;
             }
-            
-            // Try to parse as immediate address
             char *endptr;
             long addr = strtol(addr_str, &endptr, 0);
             if (*endptr == '\0') {
@@ -937,47 +833,47 @@ bool parse_operand(AssemblerState *state, char *str, Operand *operand) {
             }
         }
     }
-    
-    // Check for label
     if (isalpha(*str) || *str == '_' || *str == '.') {
         operand->mode = AM_PC_RELATIVE;
         strncpy(operand->label, str, sizeof(operand->label) - 1);
         operand->label[sizeof(operand->label) - 1] = '\0';
         return true;
     }
-    
     error_add(state, "Invalid operand: %s", str);
     return false;
 }
 
 void emit_instruction(AssemblerState *state, Instruction *inst, int pass) {
     if (!state || !inst || !inst->info) return;
-    
-    // Emit opcode
     emit_byte(state, inst->info->opcode);
-    
     switch (inst->info->opcode) {
         case OP_MOV:
+        case OP_MOVW:
         case OP_LOAD:
         case OP_STORE:
         case OP_CMP:
         case OP_TEST: {
-            // Rdst, Mode, Rsrc/Imm
             emit_byte(state, (uint8_t)inst->operands[0].value.reg_num);
             if (inst->operand_count > 1) {
                 if (inst->operands[1].mode == AM_IMMEDIATE || inst->operands[1].mode == AM_DIRECT || inst->operands[1].mode == AM_PC_RELATIVE) {
-                    emit_byte(state, 1); // Immediate mode
+                    emit_byte(state, 1);
                     uint32_t val = inst->operands[1].value.immediate;
                     if (inst->operands[1].label[0]) {
                         Symbol *sym = symbol_find(state, inst->operands[1].label);
                         if (sym) val = sym->value;
                         else if (pass == 2) error_add(state, "Undefined label: %s", inst->operands[1].label);
                     }
-                    // Always 16-bit Little Endian for these core opcodes
-                    emit_byte(state, (uint8_t)(val & 0xFF));
-                    emit_byte(state, (uint8_t)((val >> 8) & 0xFF));
+                    if (inst->info->opcode == OP_MOVW) {
+                        emit_byte(state, (uint8_t)(val & 0xFF));
+                        emit_byte(state, (uint8_t)((val >> 8) & 0xFF));
+                        emit_byte(state, (uint8_t)((val >> 16) & 0xFF));
+                        emit_byte(state, (uint8_t)((val >> 24) & 0xFF));
+                    } else {
+                        emit_byte(state, (uint8_t)(val & 0xFF));
+                        emit_byte(state, (uint8_t)((val >> 8) & 0xFF));
+                    }
                 } else {
-                    emit_byte(state, 0); // Register mode
+                    emit_byte(state, 0);
                     emit_byte(state, (uint8_t)inst->operands[1].value.reg_num);
                 }
             }
@@ -991,7 +887,6 @@ void emit_instruction(AssemblerState *state, Instruction *inst, int pass) {
         case OP_AND:
         case OP_OR:
         case OP_XOR: {
-            // Rdst, Rsrc1, Mode, Rsrc2/Imm
             emit_byte(state, (uint8_t)inst->operands[0].value.reg_num);
             emit_byte(state, (uint8_t)inst->operands[1].value.reg_num);
             if (inst->operand_count > 2) {
@@ -1003,7 +898,6 @@ void emit_instruction(AssemblerState *state, Instruction *inst, int pass) {
                         if (sym) val = sym->value;
                         else if (pass == 2) error_add(state, "Undefined label: %s", inst->operands[2].label);
                     }
-                    // Always 16-bit Little Endian
                     emit_byte(state, (uint8_t)(val & 0xFF));
                     emit_byte(state, (uint8_t)((val >> 8) & 0xFF));
                 } else {
@@ -1014,14 +908,12 @@ void emit_instruction(AssemblerState *state, Instruction *inst, int pass) {
             break;
         }
         case OP_OUT: {
-            // Port, Reg
             uint32_t port = inst->operands[0].value.immediate;
             emit_byte(state, (uint8_t)(port & 0xFF));
             emit_byte(state, (uint8_t)inst->operands[1].value.reg_num);
             break;
         }
         case OP_IN: {
-            // Reg, Port
             emit_byte(state, (uint8_t)inst->operands[0].value.reg_num);
             uint32_t port = inst->operands[1].value.immediate;
             emit_byte(state, (uint8_t)(port & 0xFF));
@@ -1057,10 +949,8 @@ void emit_instruction(AssemblerState *state, Instruction *inst, int pass) {
         case OP_HALT:
         case OP_NOP:
         case OP_RET:
-            // Already emitted opcode
             break;
         default:
-            // Fallback for others
             for (int i = 0; i < inst->operand_count; i++) {
                 if (inst->operands[i].mode == AM_REGISTER || inst->operands[i].mode == AM_REGISTER_INDIRECT) {
                     emit_byte(state, (uint8_t)inst->operands[i].value.reg_num);
@@ -1076,73 +966,41 @@ void emit_instruction(AssemblerState *state, Instruction *inst, int pass) {
 
 void optimize_instructions(AssemblerState *state) {
     if (!state || !state->optimize) return;
-    
     printf("Performing basic optimizations...\n");
-    
-    // Simple peephole optimizations
     for (int i = 0; i < state->section_count; i++) {
         Section *sec = &state->sections[i];
         if (!sec->data || sec->size == 0) continue;
-        
-        // Look for common patterns
         for (uint32_t j = 0; j < sec->size - 1; j++) {
-            // NOP removal
             if (sec->data[j] == OP_NOP) {
-                // Remove NOP by shifting everything left
-                for (uint32_t k = j; k < sec->size - 1; k++) {
-                    sec->data[k] = sec->data[k + 1];
-                }
+                for (uint32_t k = j; k < sec->size - 1; k++) sec->data[k] = sec->data[k + 1];
                 sec->size--;
-                if (j > 0) j--; // Recheck this position
+                if (j > 0) j--;
             }
         }
     }
 }
-// Write binary output file
+
 int write_binary(AssemblerState *state, const char *filename) {
     if (!state || !filename) return 0;
-    
     FILE *f = fopen(filename, "wb");
     if (!f) {
+        perror("fopen");
         error_add(state, "Cannot open file %s for writing", filename);
         return 0;
     }
-    
-    // In pass 2, memory is already populated in state->memory
-    // We just write it out.
-    // Determining size: state->pc holds the highest address written + 1 (roughly)
-    // But sections might be scattered.
-    // For simple BeboAsm, we'll write from 0 to max used address.
-    // Or just write the whole 64KB?
-    // Let's write up to the highest initialized byte.
-    // For now, let's write the whole 64KB for simplicity or a fixed size if sections are small.
-    // But `hello.basm` is small.
-    // Let's find the max address.
-    
-    // Actually, let's just write the text section and data section.
-    // But they are in the same memory space.
-    // Let's just write `state->pc` bytes if we started at 0.
-    // If we used .ORG to jump, we might have gaps.
-    // Simple approach: Write 0 to state->pc.
-    
-    // However, the simulator expects to load the file into memory.
-    // If we have gaps, we should feel them with NOPs or Zeros.
-    // state->memory is already zero-initialized (calloc).
-    
-    // Let's check where the max address is.
-    // We can iterate state->sections to find max usage.
     uint32_t max_addr = 0;
     for (int i = 0; i < state->section_count; i++) {
         if (state->sections[i].address + state->sections[i].size > max_addr) {
             max_addr = state->sections[i].address + state->sections[i].size;
         }
     }
-    
-    // If max_addr is 0 (e.g. error), use state->pc
     if (max_addr == 0) max_addr = state->pc;
     
-    fwrite(state->memory, 1, max_addr, f);
-    
+    size_t written = fwrite(state->memory, 1, max_addr, f);
     fclose(f);
+    
+    if (written != max_addr) {
+        return 0;
+    }
     return 1;
 }

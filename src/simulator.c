@@ -45,9 +45,9 @@ SimulatorState* simulator_create(AssemblerState *state) {
     }
     
     // Set special registers
-    sim->pc = 0x0000;          // Start at beginning of code
-    sim->sp = 0x3FFF;          // Top of stack (grows downward)
-    sim->fp = 0x3FFF;          // Frame pointer starts at stack top
+    sim->pc = 0x0000;          
+    sim->sp = MEMORY_SIZE - 4;          // Top of memory
+    sim->fp = MEMORY_SIZE - 4;          
     sim->registers[REG_SP] = sim->sp;
     sim->registers[REG_FP] = sim->fp;
     sim->registers[REG_PC] = sim->pc;
@@ -132,11 +132,13 @@ int simulator_run(SimulatorState *sim) {
             if (c == 'q' || c == 'Q') break;
         }
         
-        // Instruction limit (safety)
+        // Instruction limit (removed for OS)
+        /*
         if (sim->instructions_executed > 1000000) {
             printf("\n⚠️  Instruction limit reached\n");
             break;
         }
+        */
     }
     
     clock_t end_time = clock();
@@ -179,6 +181,25 @@ int simulator_execute_instruction(SimulatorState *sim) {
     switch (opcode) {
         case OP_MOV:
             return execute_mov(sim);
+        case OP_MOVW: {
+            uint8_t dest_reg = memory_read_byte(sim, sim->pc++);
+            uint8_t mode = memory_read_byte(sim, sim->pc++);
+            if (mode == 0x01) { // Immediate
+                uint32_t val = memory_read_byte(sim, sim->pc++);
+                val |= (uint32_t)memory_read_byte(sim, sim->pc++) << 8;
+                val |= (uint32_t)memory_read_byte(sim, sim->pc++) << 16;
+                val |= (uint32_t)memory_read_byte(sim, sim->pc++) << 24;
+                sim->registers[dest_reg] = val;
+            } else if (mode == 0x00) { // Register
+                uint8_t src_reg = memory_read_byte(sim, sim->pc++);
+                sim->registers[dest_reg] = sim->registers[src_reg];
+            } else {
+                printf("Invalid MOVW mode: 0x%02X\n", mode);
+                return 0;
+            }
+            sim->clock_cycles += 4;
+            return 1;
+        }
         case OP_ADD:
             return execute_add(sim);
         case OP_SUB:
