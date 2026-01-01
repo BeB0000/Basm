@@ -1,0 +1,24 @@
+.CODE
+
+START:
+    MOV R1, #HELLO_MSG
+    
+PRINT_LOOP:
+    LOAD R2, [R1]
+    
+    CMP R2, #0
+    JE END_PRINT
+    
+    OUT #0x01, R2
+    
+    INC R1
+    JMP PRINT_LOOP
+
+END_PRINT:
+    HALT
+
+.DATA
+
+HELLO_MSG:
+    .STRING "Hello, World from BeboAsm!"
+    .BYTE 0
