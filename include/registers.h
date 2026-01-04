@@ -3,10 +3,8 @@
 
 #include <stdint.h>
 
-// تعريف السجلات الرئيسية
 #define NUM_REGISTERS 16
 
-// أنواع السجلات
 typedef enum {
     REG_TYPE_GENERAL,
     REG_TYPE_STACK,
@@ -15,18 +13,15 @@ typedef enum {
     REG_TYPE_POINTER
 } RegisterType;
 
-// بنية السجل
 typedef struct {
     char name[8];
     int number;
     RegisterType type;
-    int bits;  // 32 أو 64
+    int bits;
     const char *description;
 } RegisterInfo;
 
-// جدول السجلات لمعمارية x64
 static RegisterInfo registers[] = {
-    // السجلات العامة
     {"RAX", 0, REG_TYPE_GENERAL, 64, "Accumulator"},
     {"RCX", 1, REG_TYPE_GENERAL, 64, "Counter"},
     {"RDX", 2, REG_TYPE_GENERAL, 64, "Data"},
@@ -36,7 +31,6 @@ static RegisterInfo registers[] = {
     {"RSI", 6, REG_TYPE_INDEX, 64, "Source Index"},
     {"RDI", 7, REG_TYPE_INDEX, 64, "Destination Index"},
     
-    // السجلات الممتدة
     {"R8", 8, REG_TYPE_GENERAL, 64, "Extended Register 8"},
     {"R9", 9, REG_TYPE_GENERAL, 64, "Extended Register 9"},
     {"R10", 10, REG_TYPE_GENERAL, 64, "Extended Register 10"},

@@ -32,7 +32,11 @@ OpcodeMetadata instruction_set[] = {
     {"MOV", OP_MOV, FORMAT_R, 2, 1, 2, {{OT_REG | OT_MEM, "dst"}, {OT_REG | OT_IMM | OT_MEM, "src"}}, IF_NONE, "Move data"},
     {"MOVW", OP_MOVW, FORMAT_R, 2, 1, 2, {{OT_REG, "dst"}, {OT_REG | OT_IMM, "src"}}, IF_NONE, "Move 32-bit data"},
     {"LOAD", OP_LOAD, FORMAT_M, 3, 2, 2, {{OT_REG, "reg"}, {OT_MEM | OT_LABEL, "addr"}}, IF_MEMORY, "Load from memory"},
+    {"LDB", OP_LOADB, FORMAT_M, 3, 2, 2, {{OT_REG, "reg"}, {OT_MEM | OT_LABEL, "addr"}}, IF_MEMORY, "Load byte from memory"},
+    {"LDW", OP_LOADH, FORMAT_M, 3, 2, 2, {{OT_REG, "reg"}, {OT_MEM | OT_LABEL, "addr"}}, IF_MEMORY, "Load word from memory"},
     {"STORE", OP_STORE, FORMAT_M, 3, 2, 2, {{OT_REG, "reg"}, {OT_MEM | OT_LABEL, "addr"}}, IF_MEMORY, "Store to memory"},
+    {"STB", OP_STOREB, FORMAT_M, 3, 2, 2, {{OT_REG, "reg"}, {OT_MEM | OT_LABEL, "addr"}}, IF_MEMORY, "Store byte to memory"},
+    {"STW", OP_STOREH, FORMAT_M, 3, 2, 2, {{OT_REG, "reg"}, {OT_MEM | OT_LABEL, "addr"}}, IF_MEMORY, "Store word to memory"},
     {"PUSH", OP_PUSH, FORMAT_R, 1, 1, 1, {{OT_REG | OT_IMM, "src"}}, IF_STACK, "Push to stack"},
     {"POP", OP_POP, FORMAT_R, 1, 1, 1, {{OT_REG, "dst"}}, IF_STACK, "Pop from stack"},
     {"XCHG", OP_XCHG, FORMAT_R, 2, 2, 2, {{OT_REG, "dst"}, {OT_REG, "src"}}, IF_NONE, "Exchange registers"},
@@ -101,9 +105,9 @@ AssemblerState* assembler_create(bool optimize, bool debug) {
     
     // Create default sections
     section_create(state, ".text", 0x0000, 0x05); // Read + Execute
-    section_create(state, ".data", 0x1000, 0x06); // Read + Write
-    section_create(state, ".bss", 0x2000, 0x06);  // Read + Write
-    section_create(state, ".stack", 0x3000, 0x06); // Read + Write
+    section_create(state, ".data", 0x4000, 0x06); // Read + Write (Moved to avoid collision at 0x1000)
+    section_create(state, ".bss", 0x6000, 0x06);  // Read + Write
+    section_create(state, ".stack", 0x8000, 0x06); // Read + Write
     
     section_switch(state, ".text");
     
@@ -245,22 +249,30 @@ void assemble_pass(AssemblerState *state, int pass) {
         
         if (result == PARSE_ERROR) {
             error_add(state, "Line %d: Syntax error", state->current_line);
-        } else if (result == PARSE_DIRECTIVE) {
-            handle_directive(state, line, pass);
-        } else if (result == PARSE_EMPTY) {
-            // Empty line handled
-        } else if (result == PARSE_INSTRUCTION) {
-            if (pass == 1) {
-                // Add label if present
-                if (inst.label[0]) {
-                    symbol_add(state, inst.label, state->pc, SYM_CODE);
+        } else {
+             // Handle label for both directives and instructions
+             if (pass == 1 && inst.label[0]) {
+                 symbol_add(state, inst.label, state->pc, SYM_CODE);
+             }
+
+             if (result == PARSE_DIRECTIVE) {
+                // Use original_line because parse_line modifies 'line' (cuts at colon)
+                // We need to find where the directive starts
+                char *dir_start = original_line;
+                char *colon = strchr(original_line, ':');
+                if (colon) {
+                    dir_start = colon + 1;
                 }
-                // Update PC with instruction size
-                state->pc += instruction_full_size(&inst);
-            } else if (pass == 2) {
-                // Emit instruction
-                emit_instruction(state, &inst, pass);
-            }
+                handle_directive(state, dir_start, pass);
+             } else if (result == PARSE_INSTRUCTION) {
+                if (pass == 1) {
+                    // Update PC with instruction size
+                    state->pc += instruction_full_size(&inst);
+                } else if (pass == 2) {
+                    // Emit instruction
+                    emit_instruction(state, &inst, pass);
+                }
+             }
         }
     }
 }
@@ -653,7 +665,24 @@ void handle_directive(AssemblerState *state, char *line, int pass) {
                         state->pc++;
                     }
                 }
+                // Null terminator
+                if (pass == 2) emit_byte(state, 0);
+                else state->pc++;
             }
+        }
+    } else if (strcmp(directive, "DWORD") == 0) {
+        char *token = strtok(line, ",");
+        while (token) {
+            if (pass == 2) {
+                uint32_t val = parse_number(token);
+                emit_byte(state, (uint8_t)(val & 0xFF));
+                emit_byte(state, (uint8_t)((val >> 8) & 0xFF));
+                emit_byte(state, (uint8_t)((val >> 16) & 0xFF));
+                emit_byte(state, (uint8_t)((val >> 24) & 0xFF));
+            } else {
+                state->pc += 4;
+            }
+            token = strtok(NULL, ",");
         }
     }
 }
@@ -706,18 +735,35 @@ void handle_include(AssemblerState *state, const char *filename, int pass) {
     char line[1024];
     while (fgets(line, sizeof(line), file)) {
         state->current_line++;
+        
+        char original_line[1024];
+        strcpy(original_line, line);
+        
         Instruction inst;
         memset(&inst, 0, sizeof(inst));
         int result = parse_line(state, line, &inst, pass);
+        
         if (result == PARSE_ERROR) {
             error_add(state, "Line %d: Syntax error", state->current_line);
-        } else if (result == PARSE_INSTRUCTION) {
-            if (pass == 1) {
-                if (inst.label[0]) symbol_add(state, inst.label, state->pc, SYM_CODE);
-                state->pc += instruction_full_size(&inst);
-            } else if (pass == 2) {
-                emit_instruction(state, &inst, pass);
-            }
+        } else {
+             if (pass == 1 && inst.label[0]) {
+                 symbol_add(state, inst.label, state->pc, SYM_CODE);
+             }
+             
+             if (result == PARSE_DIRECTIVE) {
+                char *dir_start = original_line;
+                char *colon = strchr(original_line, ':');
+                if (colon) {
+                    dir_start = colon + 1;
+                }
+                handle_directive(state, dir_start, pass);
+             } else if (result == PARSE_INSTRUCTION) {
+                if (pass == 1) {
+                    state->pc += instruction_full_size(&inst);
+                } else if (pass == 2) {
+                    emit_instruction(state, &inst, pass);
+                }
+             }
         }
     }
     state->include_depth--;
@@ -727,6 +773,7 @@ void handle_include(AssemblerState *state, const char *filename, int pass) {
 }
 
 int parse_line(AssemblerState *state, char *line, Instruction *inst, int pass) {
+    (void)pass;
     if (!state || !line || !inst) return PARSE_ERROR;
     char *comment = strchr(line, ';');
     if (comment) *comment = '\0';
@@ -747,7 +794,9 @@ int parse_line(AssemblerState *state, char *line, Instruction *inst, int pass) {
         while (*line && isspace(*line)) line++;
         if (!*line) return PARSE_INSTRUCTION;
     }
-    if (*line == '.') return PARSE_DIRECTIVE;
+    if (*line == '.') {
+        return PARSE_DIRECTIVE;
+    }
     char mnemonic[32];
     int i = 0;
     while (*line && !isspace(*line) && i < (int)(sizeof(mnemonic) - 1)) {
@@ -802,6 +851,7 @@ bool parse_operand(AssemblerState *state, char *str, Operand *operand) {
             return true;
         } else if (*str == '#') {
             operand->mode = AM_IMMEDIATE;
+            while (*num_str && isspace(*num_str)) num_str++; // Trim leading space
             strncpy(operand->label, num_str, sizeof(operand->label) - 1);
             operand->label[sizeof(operand->label) - 1] = '\0';
             return true;
@@ -812,6 +862,10 @@ bool parse_operand(AssemblerState *state, char *str, Operand *operand) {
         if (close) {
             *close = '\0';
             char *addr_str = str + 1;
+            while (*addr_str && isspace(*addr_str)) addr_str++;
+            char *end_addr = close - 1;
+            while (end_addr > addr_str && isspace(*end_addr)) *end_addr-- = '\0';
+            
             Symbol *sym = symbol_find(state, addr_str);
             if (sym) {
                 operand->mode = AM_DIRECT;
@@ -907,16 +961,20 @@ void emit_instruction(AssemblerState *state, Instruction *inst, int pass) {
             }
             break;
         }
-        case OP_OUT: {
+        case OP_OUT:
+        case OP_OUTB: {
             uint32_t port = inst->operands[0].value.immediate;
             emit_byte(state, (uint8_t)(port & 0xFF));
+            emit_byte(state, (uint8_t)((port >> 8) & 0xFF));
             emit_byte(state, (uint8_t)inst->operands[1].value.reg_num);
             break;
         }
-        case OP_IN: {
+        case OP_IN:
+        case OP_INB: {
             emit_byte(state, (uint8_t)inst->operands[0].value.reg_num);
             uint32_t port = inst->operands[1].value.immediate;
             emit_byte(state, (uint8_t)(port & 0xFF));
+            emit_byte(state, (uint8_t)((port >> 8) & 0xFF));
             break;
         }
         case OP_INC:

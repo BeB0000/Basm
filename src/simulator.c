@@ -103,7 +103,7 @@ int simulator_run(SimulatorState *sim) {
         // Check for breakpoints
         for (int i = 0; i < sim->breakpoint_count; i++) {
             if (sim->pc == sim->breakpoints[i]) {
-                printf("\n⚡ Breakpoint hit at 0x%04X\n", sim->pc);
+                printf("\nBreakpoint hit at 0x%04X\n", sim->pc);
                 debugger_print_registers(sim);
                 return 1;
             }
@@ -111,7 +111,7 @@ int simulator_run(SimulatorState *sim) {
         
         // Execute one instruction
         if (!simulator_execute_instruction(sim)) {
-            printf("\n❌ Execution error at PC=0x%04X\n", sim->pc);
+            printf("\nExecution error at PC=0x%04X\n", sim->pc);
             return 0;
         }
         
@@ -120,7 +120,7 @@ int simulator_run(SimulatorState *sim) {
         
         // Check for halt
         if (sim->halted) {
-            printf("\n⏹️  Processor halted\n");
+            printf("\nProcessor halted\n");
             break;
         }
         
@@ -135,7 +135,7 @@ int simulator_run(SimulatorState *sim) {
         // Instruction limit (removed for OS)
         /*
         if (sim->instructions_executed > 1000000) {
-            printf("\n⚠️  Instruction limit reached\n");
+            printf("\nInstruction limit reached\n");
             break;
         }
         */
@@ -160,7 +160,7 @@ int simulator_step(SimulatorState *sim) {
     // Check for breakpoints
     for (int i = 0; i < sim->breakpoint_count; i++) {
         if (sim->pc == sim->breakpoints[i]) {
-            printf("\n⚡ Breakpoint hit at 0x%04X\n", sim->pc);
+            printf("\nBreakpoint hit at 0x%04X\n", sim->pc);
             return 0;
         }
     }
@@ -224,17 +224,39 @@ int simulator_execute_instruction(SimulatorState *sim) {
         case OP_NOP:
             sim->clock_cycles++;
             return 1;
-        case OP_OUT: {
-            // OUT port, reg (or OUT #port, reg)
-            // Implementation expects: OUT port_num, source_val
-            // Parser emits: port (imm), reg (reg)
-            // Logic: Read port, Read value
-            uint8_t port = memory_read_byte(sim, sim->pc++);
-            // Skip mode byte for port if present (simplified for now assuming strict format)
-            // Actually, assembler emits: port(BYTE), reg(BYTE)
+        case OP_OUT:
+        case OP_OUTB: {
+            uint32_t port = memory_read_byte(sim, sim->pc++);
+            port |= (uint32_t)memory_read_byte(sim, sim->pc++) << 8;
             uint8_t reg = memory_read_byte(sim, sim->pc++);
             uint32_t value = sim->registers[reg];
-            printf("OUTPUT [Port 0x%02X]: %d (0x%X) '%c'\n", port, value, value, (char)value);
+            
+            if (port == 0x01) { // Standard Output
+                putchar((char)value);
+                fflush(stdout);
+            } else if (port >= 0x1F0 && port <= 0x1F7) {
+                // Mock ATA disk port
+                // Just log for now
+                // printf("[SIM] ATA Write Port 0x%X: 0x%X\n", port, value);
+            } else {
+                // printf("OUTPUT [Port 0x%04X]: %d (0x%X) '%c'\n", port, value, value, (char)value);
+            }
+            sim->clock_cycles += 2;
+            return 1;
+        }
+        case OP_IN:
+        case OP_INB: {
+            uint8_t reg = memory_read_byte(sim, sim->pc++);
+            uint32_t port = memory_read_byte(sim, sim->pc++);
+            port |= (uint32_t)memory_read_byte(sim, sim->pc++) << 8;
+            
+            uint32_t value = 0;
+            if (port == 0x1F7) {
+                value = 0x40; // DRV_READY
+            } else {
+                // value = 0;
+            }
+            sim->registers[reg] = value;
             sim->clock_cycles += 2;
             return 1;
         }
@@ -253,11 +275,9 @@ int simulator_execute_instruction(SimulatorState *sim) {
             return 1;
         }
         case OP_LOAD: {
-            // LOAD dst, [src]
             uint8_t dst_reg = memory_read_byte(sim, sim->pc++);
             uint8_t mode = memory_read_byte(sim, sim->pc++);
             uint32_t addr;
-            
             if (mode == 0) { // Indirect Register
                 uint8_t src_reg = memory_read_byte(sim, sim->pc++);
                 addr = sim->registers[src_reg];
@@ -265,46 +285,217 @@ int simulator_execute_instruction(SimulatorState *sim) {
                  addr = memory_read_word(sim, sim->pc);
                  sim->pc += 2;
             }
-            
-            sim->registers[dst_reg] = memory_read_byte(sim, addr); // Assuming byte load for now or word? Example uses LOAD R2, [R1]
-            // Let's assume word load for versatility or check instruction definition.
-            // Example invalidates this: LOAD R2, [R1] (loads 'H') -> Byte load is safer for string
-            // But opcode table has LOAD and LOADB. Let's make LOAD generic word/byte?
-            // The instruction_set says "LOAD" "Load from memory". Default usually 32-bit/word?
-            // But hello.basm loads chars. Strings are bytes.
-            // Let's stick to byte for now to make hello world work, or check opcode.
-            // Opcode table: LOAD = 0x04.
-            // In hello.basm: .STRING "..." -> .BYTE.
-            // So LOAD needs to read byte if target is 8-bit? Register is 32-bit.
-            // Let's implement as Byte load for "LOAD R2, [R1]" in hello.basm context.
-            // Correction: LOAD usually loads machine word. LOADB loads byte.
-            // However, the example code uses LOAD. Let's check assembler.c:30: "LOAD", OP_LOAD...
-            // It might be intended as byte load for strings.
-            // Let's assume byte load to match 'hello.basm' intent of printing chars.
-            // Wait, hello.basm uses LOAD R2, [R1]. R1 points to string.
-            // If I load word, I get 4 chars.
-            // I'll implement as Byte load for now for compatibility with the example.
-            
+            // Load 32-bit value (Little Endian)
+            uint32_t val = memory_read_byte(sim, addr);
+            val |= (uint32_t)memory_read_byte(sim, addr + 1) << 8;
+            val |= (uint32_t)memory_read_byte(sim, addr + 2) << 16;
+            val |= (uint32_t)memory_read_byte(sim, addr + 3) << 24;
+            sim->registers[dst_reg] = val;
+            sim->clock_cycles += 4;
+            return 1;
+        }
+        case OP_LOADB: {
+            uint8_t dst_reg = memory_read_byte(sim, sim->pc++);
+            uint8_t mode = memory_read_byte(sim, sim->pc++);
+            uint32_t addr;
+            if (mode == 0) {
+                uint8_t src_reg = memory_read_byte(sim, sim->pc++);
+                addr = sim->registers[src_reg];
+            } else {
+                 addr = memory_read_word(sim, sim->pc);
+                 sim->pc += 2;
+            }
+            sim->registers[dst_reg] = memory_read_byte(sim, addr);
+            sim->clock_cycles += 2;
+            return 1;
+        }
+        case OP_LOADH: {
+            uint8_t dst_reg = memory_read_byte(sim, sim->pc++);
+            uint8_t mode = memory_read_byte(sim, sim->pc++);
+            uint32_t addr;
+            if (mode == 0) {
+                uint8_t src_reg = memory_read_byte(sim, sim->pc++);
+                addr = sim->registers[src_reg];
+            } else {
+                 addr = memory_read_word(sim, sim->pc);
+                 sim->pc += 2;
+            }
+            uint32_t val = memory_read_byte(sim, addr);
+            val |= (uint32_t)memory_read_byte(sim, addr + 1) << 8;
+            sim->registers[dst_reg] = val;
+            sim->clock_cycles += 3;
+            return 1;
+        }
+        case OP_STORE: {
+            uint8_t src_reg = memory_read_byte(sim, sim->pc++);
+            uint8_t mode = memory_read_byte(sim, sim->pc++);
+            uint32_t addr;
+            if (mode == 0) { // Indirect Register
+                uint8_t dst_reg = memory_read_byte(sim, sim->pc++);
+                addr = sim->registers[dst_reg];
+            } else { // Direct Memory
+                 addr = memory_read_word(sim, sim->pc);
+                 sim->pc += 2;
+            }
+            uint32_t val = sim->registers[src_reg];
+            memory_write_byte(sim, addr, val & 0xFF);
+            memory_write_byte(sim, addr + 1, (val >> 8) & 0xFF);
+            memory_write_byte(sim, addr + 2, (val >> 16) & 0xFF);
+            memory_write_byte(sim, addr + 3, (val >> 24) & 0xFF);
+            sim->clock_cycles += 4;
+            return 1;
+        }
+        case OP_STOREB: {
+            uint8_t src_reg = memory_read_byte(sim, sim->pc++);
+            uint8_t mode = memory_read_byte(sim, sim->pc++);
+            uint32_t addr;
+            if (mode == 0) {
+                uint8_t dst_reg = memory_read_byte(sim, sim->pc++);
+                addr = sim->registers[dst_reg];
+            } else {
+                 addr = memory_read_word(sim, sim->pc);
+                 sim->pc += 2;
+            }
+            memory_write_byte(sim, addr, sim->registers[src_reg] & 0xFF);
+            sim->clock_cycles += 2;
+            return 1;
+        }
+        case OP_STOREH: {
+            uint8_t src_reg = memory_read_byte(sim, sim->pc++);
+            uint8_t mode = memory_read_byte(sim, sim->pc++);
+            uint32_t addr;
+            if (mode == 0) {
+                uint8_t dst_reg = memory_read_byte(sim, sim->pc++);
+                addr = sim->registers[dst_reg];
+            } else {
+                 addr = memory_read_word(sim, sim->pc);
+                 sim->pc += 2;
+            }
+            uint32_t val = sim->registers[src_reg];
+            memory_write_byte(sim, addr, val & 0xFF);
+            memory_write_byte(sim, addr + 1, (val >> 8) & 0xFF);
+            sim->clock_cycles += 3;
+            return 1;
+        }
+        case OP_PUSH: {
+            uint8_t reg = memory_read_byte(sim, sim->pc++);
+            uint32_t val = sim->registers[reg];
+            sim->registers[REG_SP] -= 4;
+            uint32_t sp = sim->registers[REG_SP];
+            memory_write_byte(sim, sp, val & 0xFF);
+            memory_write_byte(sim, sp + 1, (val >> 8) & 0xFF);
+            memory_write_byte(sim, sp + 2, (val >> 16) & 0xFF);
+            memory_write_byte(sim, sp + 3, (val >> 24) & 0xFF);
+            sim->clock_cycles += 2;
+            return 1;
+        }
+        case OP_POP: {
+            uint8_t reg = memory_read_byte(sim, sim->pc++);
+            uint32_t sp = sim->registers[REG_SP];
+            uint32_t val = memory_read_byte(sim, sp);
+            val |= (uint32_t)memory_read_byte(sim, sp + 1) << 8;
+            val |= (uint32_t)memory_read_byte(sim, sp + 2) << 16;
+            val |= (uint32_t)memory_read_byte(sim, sp + 3) << 24;
+            sim->registers[reg] = val;
+            sim->registers[REG_SP] += 4;
+            sim->clock_cycles += 2;
+            return 1;
+        }
+        case OP_AND: {
+            uint8_t dst = memory_read_byte(sim, sim->pc++);
+            uint8_t reg1 = memory_read_byte(sim, sim->pc++);
+            uint8_t mode = memory_read_byte(sim, sim->pc++);
+            uint32_t val2;
+            if (mode == 0) val2 = sim->registers[memory_read_byte(sim, sim->pc++)];
+            else { val2 = memory_read_word(sim, sim->pc); sim->pc += 2; }
+            sim->registers[dst] = sim->registers[reg1] & val2;
+            update_flags(sim, sim->registers[dst]);
+            sim->clock_cycles += 3;
+            return 1;
+        }
+        case OP_OR: {
+            uint8_t dst = memory_read_byte(sim, sim->pc++);
+            uint8_t reg1 = memory_read_byte(sim, sim->pc++);
+            uint8_t mode = memory_read_byte(sim, sim->pc++);
+            uint32_t val2;
+            if (mode == 0) val2 = sim->registers[memory_read_byte(sim, sim->pc++)];
+            else { val2 = memory_read_word(sim, sim->pc); sim->pc += 2; }
+            sim->registers[dst] = sim->registers[reg1] | val2;
+            update_flags(sim, sim->registers[dst]);
+            sim->clock_cycles += 3;
+            return 1;
+        }
+        case OP_XOR: {
+            uint8_t dst = memory_read_byte(sim, sim->pc++);
+            uint8_t reg1 = memory_read_byte(sim, sim->pc++);
+            uint8_t mode = memory_read_byte(sim, sim->pc++);
+            uint32_t val2;
+            if (mode == 0) val2 = sim->registers[memory_read_byte(sim, sim->pc++)];
+            else { val2 = memory_read_word(sim, sim->pc); sim->pc += 2; }
+            sim->registers[dst] = sim->registers[reg1] ^ val2;
+            update_flags(sim, sim->registers[dst]);
+            sim->clock_cycles += 3;
+            return 1;
+        }
+        case OP_NOT: {
+            uint8_t dst = memory_read_byte(sim, sim->pc++);
+            sim->registers[dst] = ~sim->registers[dst];
+            update_flags(sim, sim->registers[dst]);
+            sim->clock_cycles += 2;
+            return 1;
+        }
+        case OP_SHL: {
+            uint8_t dst = memory_read_byte(sim, sim->pc++);
+            uint8_t reg1 = memory_read_byte(sim, sim->pc++);
+            uint8_t mode = memory_read_byte(sim, sim->pc++);
+            uint32_t val2;
+            if (mode == 0) val2 = sim->registers[memory_read_byte(sim, sim->pc++)];
+            else { val2 = memory_read_word(sim, sim->pc); sim->pc += 2; }
+            sim->registers[dst] = sim->registers[reg1] << (val2 & 0x1F);
+            update_flags(sim, sim->registers[dst]);
+            sim->clock_cycles += 3;
+            return 1;
+        }
+        case OP_SHR: {
+            uint8_t dst = memory_read_byte(sim, sim->pc++);
+            uint8_t reg1 = memory_read_byte(sim, sim->pc++);
+            uint8_t mode = memory_read_byte(sim, sim->pc++);
+            uint32_t val2;
+            if (mode == 0) val2 = sim->registers[memory_read_byte(sim, sim->pc++)];
+            else { val2 = memory_read_word(sim, sim->pc); sim->pc += 2; }
+            sim->registers[dst] = sim->registers[reg1] >> (val2 & 0x1F);
+            update_flags(sim, sim->registers[dst]);
             sim->clock_cycles += 3;
             return 1;
         }
         case OP_CMP: {
-            // CMP reg1, reg2/imm
             uint8_t reg1 = memory_read_byte(sim, sim->pc++);
             uint8_t mode = memory_read_byte(sim, sim->pc++);
             uint32_t val1 = sim->registers[reg1];
             uint32_t val2;
-            
-            if (mode == 0) { // Register
-                uint8_t reg2 = memory_read_byte(sim, sim->pc++);
-                val2 = sim->registers[reg2];
-            } else { // Immediate
-                val2 = memory_read_word(sim, sim->pc);
-                sim->pc += 2;
+            if (mode == 0) val2 = sim->registers[memory_read_byte(sim, sim->pc++)];
+            else { val2 = memory_read_word(sim, sim->pc); sim->pc += 2; }
+            update_flags(sim, val1 - val2);
+            sim->clock_cycles += 2;
+            return 1;
+        }
+        case OP_JGE: {
+            uint16_t target = memory_read_word(sim, sim->pc);
+            sim->pc += 2;
+            if (!(sim->flags & FLAG_NEGATIVE) || (sim->flags & FLAG_ZERO)) {
+                sim->pc = target;
+                sim->clock_cycles += 1;
             }
-            
-            uint32_t res = val1 - val2;
-            update_flags(sim, res);
+            sim->clock_cycles += 2;
+            return 1;
+        }
+        case OP_JLE: {
+            uint16_t target = memory_read_word(sim, sim->pc);
+            sim->pc += 2;
+            if ((sim->flags & FLAG_NEGATIVE) || (sim->flags & FLAG_ZERO)) {
+                sim->pc = target;
+                sim->clock_cycles += 1;
+            }
             sim->clock_cycles += 2;
             return 1;
         }

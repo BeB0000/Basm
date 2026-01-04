@@ -1,5 +1,10 @@
 # BeboAsm Quick Reference & Comprehensive Guide
 
+## Recent Toolchain Updates (Jan 2026)
+- **Simulator (`bebosim`)**: Now supports full 32-bit `LOAD` and `STORE` operations. Added support for `AND`, `OR`, `XOR`, `NOT`, `SHL`, `SHR`, `PUSH`, `POP`, `JGE`, and `JLE`.
+- **Assembler (`beboasm`)**: Fixed label resolution for directives (e.g. `label: .DWORD`). `.STRING` now automatically adds a null-terminator.
+- **Memory**: The stack now grows by 4 bytes per `PUSH` to align with the 32-bit architecture.
+
 ## Getting Started
 
 This guide explains how to use the BeboAsm toolchain to develop, simulate, and debug assembly programs.
@@ -690,7 +695,7 @@ function:
 ### Z (Zero Flag)
 ```
 Set when: Result of operation = 0
-Clear when: Result ¡Ù 0
+Clear when: Result != 0
 
 Usage:
     MOV R1, #0
